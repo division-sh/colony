@@ -66,10 +66,10 @@ colony/
 
 Most of the metadata work is **platform-side, not Colony-specific** — it makes every flow package a proper, marketplace-ready manifest. Split into:
 
-### Issue A — URGENT: enforce `platform_version`
+### Issue A — URGENT: enforce `platform_version` (filed: #1659)
 `platform_version` is parsed in ~8 files but **enforced nowhere** (code probe found no semver-range/satisfaction check). So it's decorative — the root cause of silent dialect-drift rot. `verify`/boot must **reject when the running spec version doesn't satisfy the declared range**. Colony cannot exist without this; it gates everything else.
 
-### Issue B — manifest hygiene: model self-facts strictly, stop silent-ignore
+### Issue B — manifest hygiene: model self-facts strictly, stop silent-ignore (filed: #1660)
 - Add `keywords`, `license`, `repository`, `category` as **modeled, validated** manifest fields.
 - **Unknown top-level fields should warn or fail**, not be silently ignored — silent-ignore in a marketplace manifest is a footgun (you declare a license nothing reads).
 - **Not** adding `requires`: it already exists as the import-boundary contract (`inputs/outputs/policy/credentials` the parent binds) and is enforced. The capability-audit surface (tools/backends reached) is **derived + surfaced**, not authored.
@@ -84,7 +84,7 @@ Most of the metadata work is **platform-side, not Colony-specific** — it makes
 ## 8. Sequencing & status
 
 - **Now:** scaffold in place (this repo), empty of entries (no drifted content). Local-only — no GitHub remote yet.
-- **Next:** file Issues A + B; as #1447 lands, add `patterns/batch-classify`; rebuild `twitter-prospecting` on #1447 + logic-node and add it as the first template (verified against fresh master).
+- **Next:** Issues A (#1659) + B (#1660) filed; as #1447 lands, add `patterns/batch-classify`; rebuild `twitter-prospecting` on #1447 + logic-node and add it as the first template (verified against fresh master).
 - **Deepen** as #1450/#1468/#1252 stabilize — don't over-invest in entries before the composition primitives are solid, or they'll be rewritten.
 
 ## 9. Open questions
