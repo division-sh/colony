@@ -1,0 +1,11 @@
+# Local runtime state produced by running/verifying flows
+.swarm/
+*.db
+
+# Built binaries / local tooling
+swarm-bin
+/swarm
+
+# OS / editor
+.DS_Store
+*.swp

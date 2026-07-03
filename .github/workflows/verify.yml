@@ -1,0 +1,56 @@
+name: verify
+
+# Anti-rot: verify every Colony entry against current platform-spec, on every change
+# and on a schedule so a platform dialect change that breaks an entry fails CI.
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * *" # daily, catches dialect drift landed in the platform between PRs
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout colony
+        uses: actions/checkout@v4
+        with:
+          path: colony
+
+      - name: Checkout swarm platform (master)
+        uses: actions/checkout@v4
+        with:
+          repository: division-sh/swarm
+          path: swarm
+          # token: ${{ secrets.SWARM_REPO_TOKEN }}   # uncomment if swarm is private
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: swarm/go.mod
+
+      - name: Build swarm binary
+        run: cd swarm && go build -o "$GITHUB_WORKSPACE/swarm-bin" ./cmd/swarm
+
+      - name: Verify every entry against current platform-spec
+        run: |
+          set -euo pipefail
+          SWARM="$GITHUB_WORKSPACE/swarm-bin"
+          SPEC="$GITHUB_WORKSPACE/swarm/platform-spec.yaml"
+          fail=0
+          shopt -s nullglob
+          entries=(colony/templates/*/ colony/patterns/*/)
+          if [ ${#entries[@]} -eq 0 ]; then
+            echo "no entries yet — nothing to verify (ok)"; exit 0
+          fi
+          for dir in "${entries[@]}"; do
+            [ -f "$dir/package.yaml" ] || continue
+            echo "== verify $dir =="
+            if ! "$SWARM" verify --contracts "$dir" --platform-spec "$SPEC"; then
+              echo "::error file=$dir::verify failed against current platform-spec"
+              fail=1
+            fi
+            # TODO: once the scenario runner (#1252) lands, also run:
+            #   "$SWARM" test "$dir/scenarios" --contracts "$dir" --platform-spec "$SPEC"
+          done
+          exit $fail
