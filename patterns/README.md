@@ -1,6 +1,6 @@
 # Patterns
 
-Small, single-concept building blocks you **compose into your own flows**. Each declares its pins (`interface:` in `pattern.yaml`) so it's swappable.
+Small, single-concept building blocks you **compose into your own flows**. Each declares its pins in `schema.yaml` (see #1468) so it's swappable.
 
 Unlike templates (which you fork whole), a pattern is meant to be wired in as a component — so its interface *is* its contract.
 

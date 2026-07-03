@@ -9,8 +9,8 @@ An entry (template or pattern) is accepted only if **all** hold:
 1. **Verifies.** `swarm verify` passes against the current `platform-spec` (the version pinned in the entry's `platform_spec` field).
 2. **Proven.** It ships at least one scenario test under `scenarios/` that exercises its behavior (deterministic; no live LLM spend). CI runs these. *(Until the scenario runner lands, `swarm verify` + a documented `swarm event publish` walkthrough is the interim proof.)*
 3. **Documented.** A `README.md` that states: what it does, its inputs/outputs, required backends/tools/credentials, and how to run or compose it.
-4. **Declared metadata.** A `template.yaml` (templates) or `pattern.yaml` (patterns) — see [docs/authoring-guide.md](./docs/authoring-guide.md) for the schema.
-5. **Interface (patterns only).** Patterns declare their pins (inputs/outputs) so they're swappable/composable.
+4. **Manifest.** A complete `package.yaml` — name, version, description, `platform_version`, and the `colony:` curation block (`maturity`, `category`). See [docs/authoring-guide.md](./docs/authoring-guide.md). No separate metadata file: Colony derives the catalog from `package.yaml` + the contracts.
+5. **Interface (patterns only).** Patterns declare their pins (inputs/outputs) in `schema.yaml` so they're swappable/composable (see #1468).
 6. **Idiomatic.** It follows current platform patterns — it's teaching material, so it should model the *right* way, not a workaround.
 
 ## Anti-rot policy
