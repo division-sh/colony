@@ -4,9 +4,9 @@ How to write a Colony entry that clears the bar. See [CONTRIBUTING.md](../CONTRI
 
 ## Principle: one manifest, derive the rest
 
-An entry has **no Colony-specific metadata file**. The flow's own `package.yaml` is the manifest; Colony's catalog is *derived* from it (plus the contracts). The only Colony-owned data is two curation fields, namespaced under an optional `colony:` block in `package.yaml` that the runtime ignores.
+An entry has **no Colony-specific metadata**. The flow's own `package.yaml` is the manifest — everything an entry declares is a *fact the package states about itself*. Colony's catalog (`index.yaml`) is **generated** from it, adding only **verification status** (which a package can't self-assert — it's computed at verify time).
 
-We do **not** restate anything the contracts already declare: the interface/pins live in `schema.yaml` (see #1468), and required tools/credentials are declared once (see `requires` below and #-manifest issue).
+We do **not** restate anything the contracts already declare: the interface/pins live in `schema.yaml` (see #1468), and the import contract lives in `requires` (already enforced at boot). Which tools/backends a flow reaches is **derived** from `tools.yaml`/agents and surfaced in the catalog — not re-authored.
 
 ## Entry layout
 
@@ -16,44 +16,36 @@ templates/<name>/            (or patterns/<name>/)
 ├── schema.yaml, nodes.yaml, events.yaml, entities.yaml, agents.yaml, tools.yaml, …
 ├── flows/                   # child flows, if any
 ├── README.md                # what it does, I/O, requirements, how to run/compose
-└── scenarios/               # deterministic scenario tests that prove behavior
+└── scenarios/               # smoke scenarios that prove the example still works
     └── happy_path.yaml
 ```
 
+`templates/` vs `patterns/` (complete flow vs composable building block) is carried by **directory**, not a field.
+
 ## `package.yaml`
 
-The manifest is the flow's own package file. Fields marked **(today)** exist now; **(proposed)** are tracked in the platform manifest issue (see [design.md](./design.md)).
+Fields marked **(today)** exist now; **(proposed)** are tracked in the platform manifest issues — and must be *strictly modeled* by the loader, since unknown top-level fields are silently ignored today (a marketplace footgun).
 
 ```yaml
 name: twitter-prospecting            # (today)
 version: 1.0.0                       # (today) semver of the package
 author: youmew                       # (today)
-description: >                       # (today) what it does
-  X/Twitter account-prospecting pipeline…
+description: > …                     # (today) what it does
 platform_version: ">=1.6.0"          # (today, must be ENFORCED) platform-spec compat — the anti-rot anchor
-flows:                               # (today)
-  - { id: discovery, flow: discovery, mode: static }
-  - { id: account,   flow: account,   mode: static }
+flows: [ … ]                         # (today)
 
-# ── manifest additions (proposed; platform-owned, serve marketplace too) ──
-keywords: [prospecting, social, scoring]     # (proposed) discovery/search
-license: MIT                                 # (proposed) redistribution
+keywords: [prospecting, social, scoring]   # (proposed) discovery/search
+license: MIT                               # (proposed) redistribution
 repository: https://github.com/division-sh/colony   # (proposed) provenance
-requires:                                    # (proposed) EXPLICIT + verified against actual usage
-  backend: [anthropic]                       #   the import-time audit surface — declared, not just derived
-  tools: [getxapi]
-  credentials: [getxapi_api_key]
-
-# ── Colony curation only (runtime ignores this block) ──
-colony:
-  maturity: flagship                 # flagship | reference | pattern
-  category: lead-gen                 # catalog shelf
+category: lead-gen                         # (proposed) catalog shelf (descriptive self-fact)
 ```
 
-`interface` / pins are **not** here — they come from `schema.yaml` (#1468). `requires` is the one deliberate exception to "derive, don't restate": it's the capability/dependency **audit surface**, so it's declared explicitly *and* cross-checked by `verify` against actual usage (declared-but-unused or used-but-undeclared → error).
+- `interface`/pins → `schema.yaml` (#1468), never here.
+- `requires` (import contract: inputs/outputs/policy/credentials the parent binds) → already exists and is enforced; declare it there, don't invent a parallel shape.
+- Capability surface (tools/backends reached) → **derived** and surfaced in `index.yaml`, not authored.
 
 ## Principles
 
 - **Push logic into deterministic nodes; keep the LLM at the boundary.** Routing, gating, scoring math, and bucketing belong in `system_node` handlers (CEL) or (when available) `tool_call` / `logic_node`; agents are for irreducible judgment only.
-- **Prove it deterministically.** Scenario tests inject canned agent outputs and assert on the resulting events/state — no live LLM spend. An entry without a scenario isn't proven.
+- **Prove it deterministically.** Scenario tests inject canned agent outputs and assert on the resulting events/state — no live LLM spend. These are *smoke tests for the example*, not the platform's semantic conformance (that stays in `swarm`).
 - **Pin the platform version.** Set `platform_version` to what you verified against; CI holds you to it.
