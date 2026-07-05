@@ -50,19 +50,21 @@ Just enough pack structure to give the composer real ingredients: manifest, expo
 **Gate:** guided commands produce **minimal, repeatable** contract diffs; re-running the same command yields no meaningless diff. *This is what makes "generate the contract, don't hide it" real — unstable/unreadable generated YAML = "we hide the YAML badly."*
 
 ## M4 — Guided composer wedge *(THE MARKET PROOF — keep it narrow)*
-No-hand-YAML path for one flow family (support-triage), ~5 first-party packs (email, approval, kb.search, CRM, send), mock connectors first, **thin binding** second (credential binding, mock→real swap, basic policy/approval binding, basic capability surface). Not a general marketplace composer.
+No-hand-YAML path for one **reactive-pipeline** flow (support-triage — ~50% of real workflows; the *time* dimensions come in M5), ~5 first-party packs (email, approval, kb.search, CRM, send), mock connectors first, **thin binding** second. Includes the cheap, high-ROI UX quality that *surfaces shipped primitives* — the **diagnose loop** (trace→explain→edit→**fork**→regression, using replay/fork/trace/spend_ledger), **entity-first** question, **`describe --prove`** (claims→receipts), **ceremony scaled to effect class**, **failure frames** (`verify ✗`, doctor-format, refuse-and-offer), and the **session/hub** model (draft-immediately, resumable). Not a general marketplace composer.
 
-**Gate:** a new user goes guided-intent → running mock flow → inspect capability surface → bind real credentials → running. If it ends with "now go configure secrets in a file," the wedge is fake.
+**Hard Stage-1 prerequisite — #1712 (CLI output audit):** three findings each shatter the 60-second wedge and belong alongside #1655/#1657: mock boots require Docker (dies at `runtime_context`), `trace` hides business events behind `platform.runtime_log` noise, OAuth/connection errors are raw Go dumps.
+
+**Gate:** a new user goes guided-intent → running mock flow → inspect capability surface (`--prove`) → diagnose a wrong outcome (explain→edit→fork) → bind real credentials → running. If it ends with "now go configure secrets in a file," the wedge is fake. Plus a **friction budget** (time-to-first-mock-run ≤ target, zero credentials, ≤ N choices — measured, release-blocking) and **progressive vocabulary** (≤2 new platform nouns per screen).
 
 ## M3b — Provider pack engine *(parallel with / after M4 — must not block it)*
 The provider-trigger manifest engine (#1704): closed trust primitives, raw-body/HMAC/JWKS/timestamp/dedupe, durable ack, setup activities, capability audit.
 
 **Gate:** GitHub + Slack + Stripe re-expressed as manifests (retiring their Go), *or* deliberately classified unsupported pending a new kernel primitive. Twitter-prospecting is the stress-test.
 
-## M5 — Cross-author composition and trust
-Ontology packs, mapper packs (pure-compute + tests + lossiness warnings), compatibility rules, upgrade capability-diffs, richer binding (data-exposure/budget/retention review).
+## M5 — The time dimension + cross-author composition and trust
+**The M4→M5 coverage bridge is the *policy sheet*:** generalize the ordered route table into typed, ordered, statically-verifiable rows — condition / temporal (deadlines, SLAs, escalations) / collection (fan-out) / join / join-timeout / loop (capped, with escape) / schedule — plus one verb, **`stages`** (author the entity lifecycle), and compensation as a stage-indexed cancel sheet. This takes coverage from reactive-pipeline (~50%) to **real business processes (~95%)**; the residual 5% is code-shaped (compute packs, #1663). Guardrail: the row-type set is **closed and each type has its own `verify` check** (bounded timer, loop cap, join completeness) — else it's a middle-language tarpit. **`describe --graph` lands here** (30-row sheets / 8-stage lifecycles outgrow wizard screens). Plus: ontology packs (governed — one Colony-curated ontology per domain, semver, cross-major needs a mapper), mapper packs (pure-compute + tests + lossiness warnings), upgrade capability-diffs, richer binding (data/budget/retention), and the **day-30** surfaces (`swarm spend`, `rename`, credential rotation, async job texture).
 
-**Gate:** a stranger's flow + a first-party provider + a mapper compose safely, with a visible capability surface and end-to-end replay. *(M4 uses a first-party mini-vocabulary; M5 formalizes ontologies. Ontology = meaning, not just field shape.)*
+**Gate:** a flow with a *deadline, a join, a capped loop, and a lifecycle* composes without YAML and verifies (exhaustiveness + cap-on-loops + join-completeness); a stranger's flow + a first-party provider + a mapper compose safely with a visible capability surface and end-to-end replay. *(Ontology = meaning, not just field shape.)*
 
 ## M6 — Assembly agent *(the magic trick — only after the floor is concrete)*
 NL intent → proposed composition, driving the same typed operations a human can (search → shape → wire → route → mapper → bind → capability surface → verify → patch).
@@ -95,3 +97,4 @@ Flagship pack library + publishing UX + semver/compatibility + ontology governan
 4. **Hiding** generated contracts — "no hand-YAML" ≠ "no visible contract."
 5. Treating **ontology** as merely schema (it's meaning; mappers need lossiness warnings + tests).
 6. Letting **code sneak back into effects** — compute stays pure, external I/O stays in durable activities (no `logic_node`-with-tools regression).
+7. **Rendering only structure, never time.** The authoring UX is strongest at structure (contracts, types, capabilities) and weakest at *time* (iteration, deadlines, day-30, failure, waiting, regret) — but time is where the durable-runtime moat lives. Omitting the diagnose loop / policy sheet / day-30 doesn't just cut coverage, it *hides the moat*. Watch that M4/M5 render time, not just shape.
