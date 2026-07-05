@@ -1,209 +1,225 @@
-# Vision: a maximally extensible agent runtime (microkernel + pack marketplace)
+# Vision: a capability-bounded microkernel for agent workflows
 
-> Status: thinking doc for review. Not committed spec. Captures the extensibility thesis, the pack zoo, and the two locked design directions it rests on (#1704 provider-trigger packs, and WASM/logic-node support from #1460). Colony is the registry for these packs.
+> Status: thinking doc for review. Not committed spec. Captures the extensibility thesis, the pack zoo, and the locked design directions it rests on. Colony is the registry (not the authority) for these packs.
+>
+> **v2** — reworked after review: §8 replaced (no more `logic_node`-with-tool-access; pure compute + durable activities + declarative selection), moat wording sharpened, two-layer pack envelope, capability-diff UX, registry-is-not-authority, ontology governance, the new-kernel-primitive process, and staged sequencing.
 
 ---
 
 ## 1. Thesis
 
-**Swarm is a microkernel for agent workflows.** A small, trusted **kernel** owns the guarantees — determinism, atomicity, replay, isolation, the trust/crypto primitives, and the sandbox. Everything else is a **marketplace of declarative packs** that plug into well-defined **boundaries** and only ever *compose the kernel's primitives* — they never become, or extend, the kernel.
+**Swarm is a microkernel for agent workflows.** A small, trusted **kernel** owns the guarantees — determinism, atomicity, replay, isolation, the trust/crypto primitives, scheduling, and the sandbox. Everything else is a **capability-bounded marketplace of declarative packs** that plug into well-defined **boundaries** and only ever *compose declared kernel primitives* — they never become, or extend, the kernel.
 
-The differentiator (the moat, §6): because a pack can only compose the deterministic kernel + durable activities + pure compute, **a workflow assembled from N third-party packs is still fully replayable, auditable, and verifiable.** Adding plugins does not erode correctness. That is structurally impossible in an arbitrary-code plugin marketplace (Zapier / n8n / community activities), and it is the reason to build this.
+The one-line moat:
 
-## 2. The core principle
+> **Third-party extension does not erode the runtime's guarantees.**
 
-> Packs compose primitives at boundaries. The kernel owns guarantees. If the guarantees *rest on* it, it's kernel — never a pack.
+Everyone has packs, plugins, templates, nodes, actions — rectangles with marketing names. The differentiator is that in Swarm, adding third-party extensions preserves replay, auditability, typed contracts, and static effect visibility. That is the architectural moat, and it only holds if the discipline below holds.
 
-- **Kernel (never pack-extensible):** determinism engine / event loop / routing; the transactional store (it *is* the atomicity/replay guarantee); the sandbox / workspace-execution substrate (pack-added execution = sandbox escape); trust/crypto/signature primitives (pack-added verification = supply-chain attack); novel LLM protocols.
-- **Boundaries (pack surface):** ingress (triggers), egress (connectors/tools), compute (pure logic), composition (flows/agents), contracts/interop (types/ontologies), policy, human-in-the-loop.
+## 2. The core principle (and the moat, stated carefully)
 
-The test for any proposed extension: *does it compose a primitive (→ pack) or do the guarantees rest on it (→ kernel)?* When a proposed pack can't be expressed as **manifest + optional pure-compute + optional durable-activity + capability declaration**, that's the signal it needs a new **kernel primitive** first — a deliberate platform decision, not a pack.
+> **If guarantees rest on it, it is kernel. If it composes primitives, it can be a pack.**
 
-## 3. The unified pack shape
+A pack must not redefine signature verification, storage/replay semantics, scheduling, entity isolation, or sandbox rules. If it can, it is a kernel extension pretending to be a plugin.
 
-Every pack, whatever its type, is the same envelope:
+And the discipline that keeps the marketplace from becoming "download random code and pray":
 
+> When a proposed pack cannot be expressed as **manifest + optional pure compute + optional durable activity + capability declaration**, that signals the need for a new **kernel primitive** — a deliberate platform decision, not "just let the pack run code here."
+
+**The moat, worded to survive attack** (not "structurally impossible for competitors" — that invites edge-case hunting):
+
+> In arbitrary-code plugin marketplaces, preserving replayability and static effect visibility across composition is not the default property. Swarm's bet is that packs remain statically auditable because **all effects pass through platform-owned primitives** and **every pack exposes a declared capability surface** — structurally enforced, verified by the runtime, not by trust.
+
+## 3. The kernel-vs-pack test (four checks)
+
+For any proposed extension:
+
+1. **Composition vs guarantee** — does it compose a primitive (pack) or do the guarantees rest on it (kernel)?
+2. **Verify-without-executing** — can `verify` reject a bad pack *without running its code*? If no → it's kernel or unsupported.
+3. **One-screen capability delta** — can an importer understand what it can do (and the delta on upgrade) on one screen? If no → the capability language is too weak or the pack type too broad.
+4. **Replay reproduce-or-gate** — can replay reproduce, or intentionally gate, *every* external effect? If no → the effect model is incomplete. **This is the master test — it *is* the moat, restated as an admission criterion.**
+
+## 4. The unified pack envelope — two layers
+
+A prompt library and a webhook verifier are not the same animal; one speaks to customers, the other accepts hostile internet traffic. So: **one universal envelope + a type-specific body.**
+
+**Universal envelope (every pack):**
+```yaml
+pack:
+  id:
+  version:
+  platform_version:      # enforced (#1659) — anti-rot anchor
+  type:                  # trigger | connector | compute | flow | agent | ontology | policy | …
+  manifest_hash:
+  provenance:
+  capabilities:          # the audit surface (§6)
+  dependencies:
+  exports:
+  tests:
 ```
-pack
-├── manifest              # declarative: composes closed platform primitives (fail-closed)
-├── optional pure compute # WASM: post-trust, deterministic, capability-sandboxed (see §8)
-├── optional activities   # durable external I/O (#1666)
-└── capability declaration # which primitives/secrets/effects/tools it touches — the audit surface
+
+**Type-specific body (examples):**
+```yaml
+trigger:    { admission: { signature, delivery_id, event_type } }
+connector:  { tools: [{ id, endpoint, auth, effect_class }] }
+compute:    { modules: [{ path, interface, resources }] }
+ontology:   { events: [{ name, schema, compatibility }] }
+agent:      { roles: [{ prompt, model_alias, allowed_tools }] }
 ```
 
-Properties, uniform across all pack types:
-- **Fail-closed** at every boundary the primitives don't cover.
-- **Capability-audited** — one capability language across pack types; this is what an importer reviews.
-- **Publishable as data** — a pack is a directory, verified, versioned. No recompiling the platform.
-- **`platform_version`-pinned + anti-rot verified** (#1659/#1660) — every pack type inherits Colony's guarantees.
-- **Determinism-preserving** — packs run through the same event-loop/journal, so composition stays replayable.
+One registry, one trust envelope — without pretending all pack types carry the same lifecycle, risk, or review burden.
 
-**Colony is the registry for *all* pack types**, not just flows. Triggers, connectors, compute modules, agents, ontologies — all the same pack shape, one registry, one trust/verification/versioning model.
+## 5. The pack zoo
 
-## 4. The pack zoo
+Fit: ✓ clean · ◐ partial (needs a primitive) · 🚫 kernel.
 
-Fit: ✓ clean · ◐ partial (needs a primitive) · 🚫 kernel (not a pack).
+**Ingress:** ✓ provider-trigger (§7) · ✓ schedule/cron (timer) · ✓ poller (activity+timer+dedupe) · ✓ inbound-email · ◐ queue/stream (needs a consumer primitive).
+**Egress:** ✓ API connector (http+auth+retry+effect-class) · ✓ notification/channel · ✓ data-sink · ✓ MCP-server · ◐ telemetry-exporter (**governance boundary — §9**).
+**Compute (pure, no I/O):** ✓ compute-module (§8) · ✓ predicate/guard (CEL) · ✓ transform/mapping · ✓ parser.
+**Composition:** ✓ flow (Colony) · ✓ agent/role (high value, low mechanism) · ✓ prompt-library.
+**Contracts & interop:** ✓ type/schema · ✓ entity/state-machine · ✓ **event-ontology (the stdlib — §10)**.
+**Policy/governance:** ✓ policy · ◐ guardrail/compliance (**enforcement is kernel-owned — §9**).
+**Human:** ✓ approval/mailbox.
+**Backends:** ◐ LLM-backend (**only the OpenAI-compatible slice; novel protocols = platform work — §9**).
 
-**Ingress — how the world starts a flow**
-- ✓ **Provider-trigger** (§7) — webhook admission. Composes HMAC/timestamp/JSONPath/dedupe. (Stripe/GitHub/Slack/Twilio/Shopify.)
-- ✓ **Schedule/cron** — emit on a schedule. Composes the timer primitive.
-- ✓ **Poller** — poll a source, emit per new item, dedupe. Composes activity + timer + dedupe. (RSS/IMAP/API.)
-- ✓ **Inbound-email** — parse inbound-parse webhook → event.
-- ◐ **Queue/stream** — Kafka/SQS/PubSub. Needs a stream-consumer kernel primitive.
+🚫 **Kernel (not packs):** determinism engine / event loop / routing; transactional store; sandbox/workspace substrate; trust/crypto/signature primitives; scheduling.
 
-**Egress — how a flow affects the world**
-- ✓ **API connector** — declarative tool set for a service's API. Composes HTTP tool + auth + retry + response-map + effect-class (#1666). Symmetric twin of triggers; a real "provider pack" is trigger **+** connector.
-- ✓ **Notification/channel** — Slack/email/SMS/push.
-- ✓ **Data-sink** — Sheets/Airtable/S3/DB. Effect-class `idempotent_write`.
-- ✓ **MCP-server** — bundle+register an MCP server as tools.
-- ◐ **Telemetry-exporter** — traces/events → Datadog/OTLP. Needs a subscribe-and-export primitive.
+**Near-term four already building:** provider-trigger (#1704), connector/tool (http + #1666), compute (#1666/#1669), flow (Colony). Best next value-per-effort: **agent/role packs** and **event-ontology packs**.
 
-**Compute — pure, deterministic, no external effects**
-- ✓ **Compute-module** (§8, #1460 logic_node) — WASM: scoring, validation, normalization, parsing, rule-classification.
-- ✓ **Predicate/guard** (#1464) — reusable named CEL predicates.
-- ✓ **Transform/mapping** — reusable field normalization (#1683 generalized).
-- ✓ **Parser** — CSV / a document type / a log format → structured.
+## 6. Capability audit as a first-class design object
 
-**Composition — assembled behavior**
-- ✓ **Flow** (Colony) — complete workflow (template) or composable sub-flow (pattern).
-- ✓ **Agent/role** — a reusable, tuned agent (prompt + tools + config). *High value, near-zero new mechanism — agents are already declarative.*
-- ✓ **Prompt-library** — reusable prompt templates/fragments.
+"Capability-audited" must mean more than "a YAML file exists." The importer sees a plain-language summary on install:
 
-**Contracts & interop — the stdlib**
-- ✓ **Type/schema** — shared types ("Money", "Person").
-- ✓ **Entity/state-machine** — a reusable lifecycle ("Order" FSM).
-- ✓ **Event-ontology** — a canonical event vocabulary for a domain. **The most strategically important type — see §9.**
+```text
+Import: stripe-payments@1.4.2
+This pack CAN:
+- Receive HTTPS webhooks at /inbound/stripe; verify with webhook_signing.stripe
+- Persist Stripe event-id dedupe markers
+- Emit: payment.captured@1, payment.failed@1, subscription.cancelled@1
+- Call Stripe API: GET /v1/events/{id} (read_only), POST /v1/webhook_endpoints (idempotent_write)
+- Read policy: stripe.webhook_tolerance ; Requires: stripe_api_key, webhook_signing.stripe
+This pack CANNOT:
+- Write entity state directly · emit undeclared events · call undeclared tools · run code before admission
+```
 
-**Policy / governance**
-- ✓ **Policy** — reusable budget/rate/escalation/retention rules.
-- ◐ **Guardrail/compliance** — PII redaction, content filters (some declarative, some compute).
-
-**Human boundary**
-- ✓ **Approval/mailbox** — reusable human-decision surfaces.
-
-**Backends (partial)**
-- ◐ **LLM-backend** — only the OpenAI-*compatible* slice (base URL + model map). Novel protocols = platform work.
-
-## 5. Near-term vs later
-Already building the first four: **provider-trigger (#1704), connector/tool (http + #1666), compute (#1460), flow (Colony).** Highest value-per-effort next tier: **agent/role packs** (huge value, near-zero mechanism) and **event-ontology packs** (the interop stdlib, §9). Everything else is deliberately later, one boundary at a time.
-
-## 6. Why this is a moat (the not-Zapier answer)
-Every plugin marketplace has the same fatal property: plugins are arbitrary code, so the *composed* workflow is a black box — not replayable, not verifiable, unauditable. Swarm inverts it: packs can only compose the deterministic kernel + durable activities + pure compute, so **a workflow assembled from third-party packs is still provably deterministic, replayable, and auditable.** You can hand someone a workflow built from strangers' packs and *prove what it does and what it can reach*. That property is impossible in an arbitrary-code marketplace, and it is the whole reason this is worth building.
-
----
+And a **capability diff on upgrade**, requiring re-approval:
+```text
+stripe-payments 1.4.2 → 1.5.0
++ NEW: POST /v1/refunds (idempotent_write)   → importer approval required
+```
 
 ## 7. Locked design A — provider-trigger packs (#1704)
 
-From the #1704 refinement: Stripe is not "another hardcoded Go adapter" — it's the first proof of a **provider-trigger manifest engine**. A provider pack has three layers:
+Stripe is the first proof of a **provider-trigger manifest engine**, not another hardcoded Go adapter. Three layers: **trigger manifest** (platform-interpreted admission, fail-closed), **optional pure compute** (post-admission normalization only), **setup activities** (durable I/O for endpoint create/teardown).
 
-```
-provider pack
-├── trigger manifest      # declarative ingress/security/admission — platform-interpreted, fail-closed
-├── optional compute      # pure normalization/classification only (post-admission)
-└── setup flows           # durable activities for provider API setup/teardown
-```
+The trigger manifest composes kernel-owned primitives (raw-body capture, HMAC, timestamp/replay rejection, constant-time compare, JSONPath extraction, dedupe, durable-ack). **No provider code runs before admission; provider code never decides trust.**
 
-**Layer 1 — trigger manifest** (the pre-event admission layer; platform-interpreted, fail-closed):
+**Governing invariant:** the manifest *composes a closed, platform-owned* verification set; a scheme it can't express is **fail-closed unsupported** (→ a new kernel primitive via §12), never an escape hatch.
 
-```yaml
-provider: stripe
-trigger:
-  provider: stripe
-  secret: webhook_signing.stripe
-  signature:
-    type: hmac_sha256
-    header: Stripe-Signature
-    timestamp_param: t
-    signature_param: v1
-    signed_payload: "{timestamp}.{raw_body}"
-    tolerance: 5m
-  delivery_id: { json_path: $.id }
-  event_type:  { json_path: $.type }
-  event_name:  inbound.stripe.{event_type}
-  ack: { mode: durable_before_dispatch }
-```
+Robustness details to include:
+- **Secret rotation:** `secret: { key: webhook_signing.stripe, rotation: { allow_previous_for: 24h } }`.
+- **Challenge/handshake:** `challenge: { type: echo_param, param: challenge, response: "{challenge}" }` — platform-owned, no pre-admission code.
+- **Mandatory generality acceptance:** the manifest engine is **not accepted** until it expresses **Stripe, GitHub, Slack, and one URL-canonicalization provider (Twilio)**. If it can't, ship the provider as a Go adapter and don't pretend the engine exists.
+- **No dynamic event explosion:** publish one `inbound.stripe` with `provider_event_type`/`provider_delivery_id` in payload; let a deterministic `switch` node route. A 200-event catalog is a phone book, not a contract.
 
-Runtime owns the generic primitives: raw-body capture, HMAC verification, timestamp tolerance/replay rejection, constant-time compare, JSONPath extraction, delivery-id/event-type validation, dedupe marker persistence, durable-ack policy, redaction. The pack declares *how* Stripe wires them. **It runs no code before admission.**
+## 8. Locked design B — pure compute + durable activities (supersedes the old `logic_node`)
 
-**Layer 2 — optional pure compute** (post-admission normalization only; `compute_module.wasm`, pure, cannot decide trust). Often unnecessary if signature + JSONPath + event templating suffice.
+**The old model (removed):** a `logic_node` execution type with direct `ctx.tools` access and direct `ctx.emit`. That makes code a mini-workflow-engine — the exact "plugin runs effects" pattern the thesis forbids, and it fails Test 3 (replay can't gate effects it can't see). Gone.
 
-**Layer 3 — setup/teardown via durable activities** (creating/deleting a webhook endpoint is external I/O → activities, not admission code). Split from the first slice.
+**The end-state split** (from #1663/#1666/#1668):
+- **`compute` handler step** — pure WASM. Declared input/output, `store_as`, `capabilities: []` (none — it's pure), resource bounds. **No tools, no emits, no writes.** Removing the code body still leaves the contract's states/emits/writes enumerable.
+- **`activity` handler step (#1666)** — the *only* path for external I/O. Tool + input + typed success/failure events + effect class + idempotency. Durable, journaled, replay-aware.
+- **Declarative selection (`rules`/`switch`, #1668)** — consumes compute/activity results to choose branches and construct emits. Contract-visible.
+- **Orchestration functions (#1671) — future, not yet designed.** The eventual *source-syntax* layer for durable-execution chains over declared activities. Referenced here as the intended direction; **not a locked design** — I'm marking it speculative rather than repeat the §8 mistake on a different rung.
 
-**Governing invariant (the load-bearing rule):** the manifest *composes* a **closed, platform-owned set** of verification primitives; it can **never introduce a verification algorithm via code.** A provider whose scheme doesn't fit the primitives is **fail-closed unsupported** (needs a deliberate new platform primitive) — *not* an escape hatch. Provider code deciding trust = supply-chain attack.
-
-**Review feedback to fold in (de-risking the generality claim):**
-1. Design the primitive vocabulary against the real **provider zoo**, not Stripe alone — the axes vary a lot (header format; signed-payload construction: body vs body+ts vs Twilio's URL+sorted-params; hash SHA256/SHA1/RSA; hex vs base64; timestamp location; challenge flows). **Prove generality by re-expressing the two already-shipped adapters (GitHub, Slack) as manifests and retiring their Go.** If it can only do Stripe, it's premature and you ship a split model (2 Go + 1 manifest = worst of both).
-2. Make the trust-primitive set explicitly **closed and platform-owned** (above).
-3. Be honest this is a **manifest-engine slice**, not "add Stripe." If the manifest can't cleanly re-express GitHub+Slack in one PR, split: ship Stripe as a Go adapter + the clean package boundary now, do the engine as a deliberate next slice from three real providers.
-4. **Dynamic event names** (`inbound.stripe.{event_type}`, ~200 Stripe types) need a subscription story — lean toward publishing `inbound.stripe` with `event_type` in payload and letting a deterministic node route, rather than 200 event names.
-5. Provider packs share the **flow/Colony packaging + capability model** — the manifest's `secret:` + declared primitives *are* its capability surface.
-
----
-
-## 8. Locked design B — WASM / logic-node support (#1460)
-
-**Two primitives, declarative-first:** `tool_call` (declarative "call a tool, map I/O", the trivial-caller majority) + `logic_node` (real computation, the minority). Keep CEL simple; graduate to `logic_node` rather than growing a middle DSL.
-
-**The `logic_node` authoring shape** — contract declares the *effect surface*; a referenced module implements the body; types are generated from the contract:
+Reworked scaffold example — WASM computes, activity does I/O, handlers emit, contract stays enumerable:
 
 ```yaml
 # nodes.yaml
-- id: template-validator
-  execution_type: logic_node
-  entry: logic/template_validator.ts       # compiles to WASM
-  subscribes: [repo_scaffold.template_requested]
-  tools: [read_flow_data]                    # the capability allowlist
-  emits: [repo_scaffold.commit_requested, repo_scaffold.template_rejected]
+scaffold-orchestrator:
+  event_handlers:
+    repo_scaffold.template_requested:
+      compute:                                   # pure WASM — no tools, no emits
+        module: ./logic/template_resolver.wasm
+        export: resolve
+        interface: empire:repo-scaffold/template-resolver@1
+        input:
+          component_type: { from: payload.component_type }
+          artifact_type:  { from: payload.artifact_type }
+          template_id:    { from: payload.template_id }
+        store_as: computed.template_resolution
+        capabilities: []
+        resources: { fuel: 250000, memory_mb: 16, output_kb: 64 }
+      rules:
+        - id: invalid_template
+          condition: computed.template_resolution.valid == false
+          emit: { event: repo_scaffold.template_rejected, fields: { reason: computed.template_resolution.reason } }
+        - id: load_template
+          condition: computed.template_resolution.valid == true
+          activity:                              # durable I/O — the only way code touches the world
+            id: load-template
+            tool: read_flow_data
+            input: { path: { from: computed.template_resolution.path } }
+            success_event: repo_scaffold.template_loaded
+            failure_event: repo_scaffold.template_load_failed
+            idempotency_key: { from: event.id }
+
+    repo_scaffold.template_loaded:               # a later handler consumes the activity result
+      emit: { event: repo_scaffold.commit_requested, fields: { request_id: event.id, files: payload.files } }
 ```
 
-```ts
-// logic/template_validator.ts — types generated by `swarm gen` from the contract
-import { handler, TemplateRequested } from "./gen/repo-scaffold";
-export default handler(async (event: TemplateRequested, ctx) => {
-  const key = `${event.payload.component_type}/${event.payload.artifact_type}`;
-  const template = TEMPLATES[key];
-  if (!template || event.payload.template_id !== ctx.entity.expected_template_id)
-    return ctx.emit.templateRejected({ reason: `unknown template tuple: ${key}` });
-  const files = await Promise.all(
-    Object.values(template).map(path => ctx.tools.readFlowData({ path })));
-  return ctx.emit.commitRequested({
-    request_id: ctx.requestId(),             // derived from source_event_id — replay-stable
-    files: files.map(f => ({ path: f.path, content: f.content })),
-  });
-});
+Boundaries are now clean: WASM resolves a path; the activity reads flow data; handlers emit typed events; the contract shows every effect; no code calls tools or owns workflow authority.
+
+**WASM substrate reasoning (unchanged, still right):** inline-code+AST-analyzer and "sandboxed Python" both converge on WASM (you need a runtime sandbox regardless; halting/resources are undecidable). Prefer **soundness by construction** (declared capabilities + generated types + platform-provided determinism) over **soundness by analysis**. Determinism by provision: the platform supplies `ctx.now/random/uuid`/derived ids and strips ambient nondeterminism; resource bounds (fuel/timeout/memory) → fail-closed, never hang; ship source + compiled `.wasm` bound by hash; execution trace for debuggability.
+
+## 9. Higher-risk categories need extra rules
+
+- **Telemetry exporter = governance boundary, not a normal connector.** Traces can leak payloads, entity state, tool results, PII, credentials. So it declares an *observation capability* with field allow/redact:
+  ```yaml
+  capabilities: { observe: { events: [payment.*], fields: { allow: [event.type, payload.amount], redact: [payload.customer_email, payload.card_last4] } } }
+  ```
+- **Guardrail/compliance:** a pack may declare *policies and pure classifiers*, but **enforcement points are kernel-owned.** If a pack's own trust decision gates an event, a guarantee rests on it → it's kernel-adjacent, not a pack.
+- **LLM backend:** OpenAI-*compatible* only (base URL + model map). Backends affect determinism, cost accounting, tool-call semantics, retry, and safety boundaries — not casual extension territory.
+
+## 10. Event-ontology packs — the interop stdlib (with governance)
+
+A marketplace compounds only if independently authored packs agree on shared event contracts; otherwise every pack emits a private dialect and the ecosystem is Babel with semver. Ontology packs are the stdlib — but they need governance:
+- **Versioning + compatibility:** add-optional = compatible; add-required / rename / narrow-enum = breaking; widen-enum = maybe; meaning-change-without-schema-change = forbidden (and unpoliceable — humans).
+- **Mapping packs:** keep raw provider events separate from canonical business events — `stripe trigger (inbound.stripe) → stripe-commerce mapper → commerce.payment.captured → fulfillment flow`.
+- **Namespace ownership — open governance question, not a spec field.** Lean: **federated reverse-DNS namespaces** (`com.stripe.payment.*`) **plus a small curated canonical set** Colony blesses (npm-scopes + an stdlib). Don't over-specify policy now; flag it early so two "standard" payment ontologies don't fork the ecosystem.
+
+## 11. Colony is a registry, not a trust oracle
+
+> Registry trust helps humans decide what to import. Runtime verification decides what is allowed to execute.
+
+- **Colony distributes:** discovery, version metadata, signed artifacts, provenance, compatibility/anti-rot test results, deprecation notices, reputation signals.
+- **The runtime independently verifies (every import):** manifest schema, `platform_version`, hashes, signatures, declared capabilities, dependency resolution, resource limits, module validity, effect classes, credential bindings.
+
+A registry listing is **never** sufficient authority to execute.
+
+## 12. When a pack can't express something: the primitive process
+
+The answer is never "just add code here." It is:
+
+```
+unsupported → RFC → primitive vocabulary → conformance tests → platform implementation
 ```
 
-**Why this factoring survives our constraints (verifiable / deterministic / replayable / safe-to-import):**
-- **Capability surface is contract-declared** (`subscribes`/`tools`/`emits`), so `verify` works *without reading the code*, and the sandbox injects only declared tools into `ctx` — the body physically cannot call an undeclared tool.
-- **Generated types** make the code conform to the contract at compile time (undeclared emits / malformed payloads fail before boot).
-- **Determinism by provision, not prohibition** — `ctx.requestId()` / `ctx.now()` / `ctx.random()` replace the nondeterministic globals, which the sandbox strips. Replay works because the platform owns every nondeterminism source.
-- **Colocated + mirrors `agents.yaml`** — module lives in the package (portable), slots into the existing execution-type model.
+A new kernel primitive is a deliberate, tested, platform-owned addition — reviewed as security-critical. That's what keeps "capability-bounded" true.
 
-**The substrate is WASM (for untrusted/importable code).** Reasoning we locked:
-- Inline-code + an AST analyzer, and "sandboxed Python," both *converge on WASM* — you need a runtime sandbox regardless (halting/resources are undecidable), so make the sandbox the boundary and keep code free inside. "Sandboxed Python done safely" is just Python-on-WASM.
-- Prefer **soundness by construction** (declared capabilities + generated types + provided determinism) over **soundness by analysis** (a heroic analyzer over an adversarial general language — the vm2 graveyard).
+## 13. Sequencing — earn the abstraction, don't build it upfront
+Do **not** build the unified pack registry first (grand abstraction, no scar tissue). Instead:
+1. **Provider trigger + connector pair** (one Stripe pack: trigger manifest + connector tools + setup activities + ontology mapping + capability summary). Acceptance: re-express ≥2 existing adapters as manifests (§7).
+2. **Durable activity / effect-class foundation** (#1666) — must land before the connector marketplace gets serious.
+3. **Compute pack** — pure WASM only; no tools, emits, or writes.
+4. **Flow pack imports** — a flow importing trigger + connector + compute + ontology; prove the composed workflow stays verifiable.
+5. **Agent/role packs** — high value; needs prompt provenance, model compat, tool restrictions, eval fixtures.
+6. **Ontology governance** — design early, make first-class after one or two real provider/flow examples show the shape.
 
-**Envelope decisions to pin (around the authoring shape):**
-1. **Substrate = WASM** for untrusted/importable; a locked isolate only for first-party-non-importable.
-2. **Finish the determinism surface** — strip `Date.now`/`Math.random`/`crypto.randomUUID`; provide `ctx.now/random/uuid/requestId`. Async contract: tool results cached per `(event_id, call)`; `Promise.all` order-preserved OK; `Promise.race`/timers/wall-clock banned.
-3. **Runtime resource bounds** (the one thing no analyzer gives you): fuel/timeout/memory → exceed → `handler_error` → fail-closed, never hang.
-4. **Packaging** — ship source (`.ts`, auditable) + compiled `.wasm` (capability-verified), bound by a content hash.
-5. **Execution trace** — the `logic_node` equivalent of `conversation.get_turn`, so moving logic out of agents doesn't cost debuggability.
-6. **Entity-write relationship** — emit-only, or writes *declared* in the contract; the single-writer invariant survives.
-
-**Keep it the escape hatch above declarative.** `tool_call` (no build, no code) is the default for the trivial-caller majority; `logic_node` is for genuine logic. The code tier must be *low-friction* (fast `gen` + compile, good local dev) or the boundary rots (people cram logic into CEL or trivial agents).
-
-**Relationship to activities (#1666):** `logic_node` is Layer-2 pure compute (post-trust, deterministic, no I/O). External I/O is *always* a durable `activity`. So: declarative `activity` for tool calls, `logic_node` for computation, and both compose the kernel — which is what keeps a pack-assembled workflow replayable.
-
----
-
-## 9. The interop stdlib — event-ontology packs
-The zoo is a pile of islands until packs from *different authors* can compose. That requires shared **event vocabularies**: a Stripe-trigger pack emitting `payment.captured` is only useful if a fulfillment-flow pack (different author) consumes that same event. Event-ontology packs are the interop layer (npm's `@types`) — treat them as first-class, not an afterthought. They're what turn "a marketplace of packs" into "an ecosystem that compounds."
-
-## 10. Open questions to think through
-1. Is the microkernel/boundary line drawn correctly? (Are triggers/connectors/compute/flows/agents/ontologies the right boundary set, and are store/sandbox/trust/engine the right kernel set?)
-2. Does the **one unified pack envelope** (manifest + compute + activities + capability decl) actually hold across all types, or do some (ontology, policy, agent) want a different shape?
-3. Capability-audit UX at scale: as pack types multiply, does the importer's audit stay tractable with one capability language?
-4. Sequencing: prove the pattern on providers (#1704), then connectors (symmetric), then agents/ontologies? Or unify the pack model *first* and let types fall out?
-5. The failure mode to watch: **half-declarative extension points** (manifest covers 80%, code bolted on for the rest) — where's the discipline that keeps every pack composing-only, fail-closed on the rest?
-6. Does Colony's current design (flow-only) generalize cleanly to a **multi-type pack registry**, or does that need its own rethink?
+## 14. Open questions
+1. Is the kernel/boundary line drawn correctly?
+2. Does the two-layer envelope hold across *all* types, or do some want more divergence?
+3. Capability-audit UX at scale — does the one-screen delta stay tractable as pack types multiply?
+4. Namespace governance model (federated vs curated vs both)?
+5. The failure mode to police forever: **half-declarative extension points** (manifest covers 80%, code bolted on for the rest). §12 is the discipline; is it enough?
+6. Does Colony's flow-only design generalize cleanly to a multi-type pack registry?
