@@ -1,212 +1,226 @@
 # Authoring & composition UX: type-directed flows, no hand-YAML
 
-> Status: thinking doc for iteration. Companion to [vision-extensible-runtime.md](./vision-extensible-runtime.md) — the vision covers *why* (microkernel + pack marketplace); this covers *how it feels* to create a non-trivial flow and compose it into a larger system. Grounds the "ease of first agent" wedge in a concrete UX.
+> Status: thinking doc for iteration. Companion to [vision-extensible-runtime.md](./vision-extensible-runtime.md) — vision covers *why* (microkernel + pack marketplace); this covers *how a human actually builds something* without hand-writing a small YAML religion.
+>
+> **v2** — reworked after review: **binding** added as a third assembly operation; the core promise reframed away from "NL builds it"; routing given explicit ordered-first-match semantics; classifier confidence / `needs_human`; business flows decoupled from providers via ontology events; round-trip/diff editing; tiered + richer capability surface as the *containment boundary*; mock/dev mode; verify-vs-eval; prompt-injection surfacing; semver/compatibility on publish.
 
 ---
 
-## 0. The wedge and the one principle
+## 0. The core promise (not "NL builds it")
 
-To win the agentic-workflow user we must match **ease of first agent** (LangChain is `pip install` + 10 lines) while keeping the moat (durable, replayable, auditable, bounded). The fear is that a YAML-authored platform is just a less-functional n8n. The resolution is one principle:
+The foundation is **not** natural language. NL *accelerates*; it isn't the bedrock. The promise:
+
+> **Swarm turns business intent into a verified, inspectable, replayable contract through guided, type-directed assembly.**
+
+And the one principle that makes it work:
 
 > **Generate the contract; don't hide it.**
 
-The CLI/assembly-agent *writes* the declarative contract for you and `verify` proves it. You never *have* to write YAML — but the contract is still there, versioned, inspectable, editable, auditable. So you get LangChain's ease **and** the guarantees, because the artifact is a *verified contract*, not opaque code. Every composition command mutates the package and re-verifies; the package stays the source of truth.
+You never *have* to write YAML — but a real contract is produced, versioned, diffable, verified, auditable, composable, replayable. This avoids both bad futures: *hand-authored YAML* (too expensive for first contact) and *hidden behind a wizard* (opaque — "the AI made a workflow somehow," which is vibe-coded operations). The wizard generates the contract; the contract stays the source of truth; `verify` proves it; the **capability surface** is the review artifact.
 
-## 1. What makes "no hand-YAML" actually possible
+## 1. Three type-directed assembly operations
 
-Composition reduces to **two type-directed operations**, plus a small set of architectural constraints that keep them tractable.
+Composition reduces to three operations over a typed substrate — the user makes *typed choices*, never designs a graph from scratch:
 
-**The architectural constraints (why the hard parts are elsewhere):**
-- **Agents do judgment** → they emit *typed signals* (`sentiment: angry|neutral|happy`). "Is this angry?" is never the router's job.
-- **Compute packs do computation** → pure WASM, emits typed results.
-- **Activities do external I/O** → durable, capability-declared, idempotent (#1666).
-- **The router is deliberately dumb** → it only *dispatches on typed fields*. That constraint is what makes routing specifiable without code.
-- **Typed pins (#1468)** → a flow's inputs/outputs are typed, ontology-referenced, directional events.
-- **Ontology packs** → shared event vocabularies, so independently-authored flows connect.
-- **`verify`** → the safety net; anything invalid fails closed, so the CLI/agent can generate confidently.
-- **The capability surface** → the *review artifact* (what a flow can touch), not the YAML.
+| Operation | User question | Generated artifact | Lives in |
+|---|---|---|---|
+| **Wiring** | "Which flows/events connect?" | pin bindings | contract |
+| **Routing** | "Which typed cases go where?" | `switch`/`threshold`/`lookup` (#1668) | contract |
+| **Binding** | "What may this touch, under whose authority?" | policy/capability/budget (design-time) + credentials/accounts (deploy-time) | contract **+** environment |
 
-**The two type-directed operations:**
-1. **Wiring** = connect compatible pins → *graph search over typed interfaces* (unique path auto-connects, ambiguity asks, gap inserts a mapper).
-2. **Routing** = decide which branch → *a decision table over typed fields* (enum → enumerated cases, number → thresholds; the CLI generates a `switch`/`threshold` #1668, `verify` checks exhaustiveness).
+**Binding splits by lifecycle** (important): *design-time* binding — policy, budgets, capability grants, approval surfaces, retention — is authored into the **contract** and versioned (a pack ships with it). *Deploy-time* binding — real OAuth accounts, secrets, tenant scope — is **per-environment**, in the secret store, *not* the contract. A pack *declares what needs binding*; the importer *binds real accounts*.
 
-Both are "pick from typed options; the tool generates + verifies." Neither is possible in an arbitrary-code tool — there's no typed field to enumerate and no exhaustiveness to check.
+**Why binding is the trust primitive, not plumbing:** the bound capability surface **is the containment boundary for untrusted packs.** You import a stranger's flow, and it can only touch the accounts/capabilities you explicitly bound — nothing else. Binding + prompt-injection defense + capability-audit are one principle: *a pack is sandboxed to exactly what you bound it to.*
+
+**The architectural constraints that keep all three tractable:**
+- **Agents do judgment** → emit *typed signals*; "is this angry?" is never the router's job.
+- **The router is deliberately dumb** → dispatches only on typed fields (doctrine — §5).
+- **Compute packs** do pure computation; **activities** do durable external I/O (#1666).
+- **Typed pins (#1468)** + **ontology packs** → wiring is graph search; independent authors' flows connect.
+- **`verify`** → structural safety net (necessary, not sufficient — §6).
 
 ---
 
 ## 2. Part 1 — Create a non-trivial flow: `support-triage`
 
-A real flow: trigger → classify → multi-way route by type/mood → draft (3 variants, one with a KB tool) → human approval → send email + log to CRM. Agents + deterministic routing + tools + human-in-loop + branching + durable I/O.
+A real business process (not a chatbot): trigger → classify → multi-way route by type/mood/confidence → draft (3 variants, one KB-tool-constrained) → human approval → durable send + durable CRM log.
 
-**Beat 1 — Intent → a plan (not YAML).**
+**Beat 1 — Intent → a plan (not YAML), consuming an *ontology* event (not a provider event).**
 ```
-$ swarm create "triage inbound support email: classify it, route by type and mood,
+$ swarm create "triage inbound support email: classify it, route by type/mood,
    draft a reply, get a human to approve, then send and log to the CRM"
 
 Proposed flow: support-triage   (entity: ticket)
-  ⚡ trigger   email.received       ← gmail@2.1
-  🧠 classify  triage-classifier    emits {category, sentiment, urgency}
-  ⑃ branch    route on classification
+  ⚡ trigger   communication.email.received@1   ← gmail@2.1 maps into support-ontology
+  🧠 classify  triage-classifier    emits {category, sentiment, urgency, needs_human}
+  ⑃ branch    ordered route on classification
   🧠 draft     billing | technical | general
   🙋 approve   human approval        ← approval@1.3
-  ⚙ send       send_email            ← gmail@2.1  (activity, idempotent_write)
-  ⚙ log        crm.create_note       ← hubspot@1.0 (activity, idempotent_write)
+  ⚙ send       communication.send    (activity, idempotent) ← gmail@2.1 OR sendgrid@1.2
+  ⚙ log        crm.create_note       (activity, idempotent) ← hubspot@1.0
 Packs: gmail@2.1, approval@1.3, hubspot@1.0, support-ontology@1.1
 Approve this shape?  [y / edit / explain]
 ```
-*The review artifact is the shape + packs, not a config file. The agent got 80% in one line; you refine the 20% that's yours.*
+*The flow consumes `communication.email.received@1` (ontology), so it's portable — Outlook / SendGrid-inbound / Zendesk map into the same event. The flow isn't accidentally Gmail-shaped.*
 
-**Beat 2 — The classifier: define the typed signals (the hinge).**
+**Beat 2 — The classifier emits typed signals *including its own uncertainty*.**
 ```
 $ swarm agent edit triage-classifier
-> Signals it emits (typed — the router dispatches on these):
-    category   enum: billing | technical | complaint | other
-    sentiment  enum: angry | neutral | happy
-    urgency    enum: high | low
+  category   enum: billing | technical | complaint | other
+  sentiment  enum: angry | neutral | happy
+  urgency    enum: high | low
+  needs_human boolean            ← the agent's OWN "I'm unsure, escalate" judgment
+  rationale  string              (for the trace/audit, not for the router)
 > verify ✓   (output is a declared event: ticket.classified)
 ```
-*The agent does the judgment and emits typed fields. The router never does semantics — it dispatches on these.*
+*`needs_human` (a single boolean the agent self-assesses) is the primary uncertainty escape — cleaner than the router thresholding confidence floats. Add per-field confidence only where a route depends on it. Misclassification is not hypothetical; the router must be able to bail to a human safely.*
 
-**Beat 3 — The router: a decision table from the typed signals (the dumb router).**
+**Beat 3 — The router: an *ordered* decision table (dumb, first-match, overlap-aware).**
 ```
-$ swarm route ticket.classified
-> Route on which signal(s)?   sentiment, category
-> These are enums — map each case to a branch:
-    sentiment == angry    → escalate-to-human   (skip auto-draft)
-    category  == complaint → escalate-to-human
-    category  == billing   → billing-draft
-    category  == technical → technical-draft
-    else                   → general-draft
-> Generating switch… verify ✓   (exhaustive: every path covered)
+$ swarm route ticket.classified   (ordered: first match wins)
+  1. needs_human == true     → escalate-to-human
+  2. sentiment == angry      → escalate-to-human
+  3. category == complaint   → escalate-to-human
+  4. category == billing     → billing-draft
+  5. category == technical   → technical-draft
+  6. else                    → general-draft
+> Overlap: (angry + billing) matches rows 2 and 4 → row 2 wins by priority.
+> verify ✓  (exhaustive; overlaps resolved by explicit order)
 ```
-*You picked typed fields; the CLI enumerated the cases; you mapped each to a pin. No CEL. `verify` proved exhaustiveness — the thing n8n can't safely offer.*
+*Rows are **ordered first-match**; `verify` checks exhaustiveness and **warns on overlap unless the priority is explicit** — so the user trusts the router instead of assuming it's haunted. You picked typed fields; the CLI enumerated cases; no CEL written.*
 
-**Beat 4 — Draft agents + tools (capability-declared).**
-```
-$ swarm agent edit technical-draft
-> Tools?  [search Colony]  kb.search  ✓
-> Emits:  ticket.draft_ready {draft_text}
-> verify ✓
-```
-*`tools:` is the allowlist — the sandbox injects only `kb.search`; the agent cannot touch anything else, and it shows in the audit surface.*
+**Beat 4 — Draft agents + tools (capability-declared).** `technical-draft` gets `tools: [kb.search]`; the sandbox injects only that.
 
-**Beat 5 — Human gate + actions (durable activities, not inline calls).**
-```
-$ swarm gate approve --on ticket.draft_ready --pack approval
-> On approve → send_email (activity), then crm.create_note (activity)
-> On reject  → loop back to draft with the human's note
-> send_email idempotency key?   ticket.id      (a retry never double-sends)
-> verify ✓
-```
-*Sending email is external I/O → a durable activity with an idempotency key. Crash after "approve", before "send" → replay resumes without double-sending.*
+**Beat 5 — Human gate + durable activities.** On approve → `communication.send` (activity, idempotency key `ticket.id`) then `crm.create_note`. On reject → loop to draft with the human's note. *Crash after approve, before send → replay resumes without double-sending.*
 
-**Beat 6 — The trust review: the capability surface (not the YAML).**
+**Beat 6 — Bind (design-time policy + deploy-time accounts), then review the capability surface.**
 ```
-$ swarm describe support-triage
+$ swarm bind support-triage
+  DESIGN-TIME (→ contract):
+    budget           max 3 LLM turns/ticket · emergency-stop enabled
+    send policy      allowed ONLY after approval.approved
+    retention        email body retained in entity state: yes · redaction: none
+  DEPLOY-TIME (→ environment):
+    communication.email  → choose account   [gmail_oauth ▸ connect]
+    crm                  → choose secret     [hubspot_api_key]
+    backend              → choose            [anthropic]
+    approval_queue       → choose team mailbox
+Approve bindings?  [y / edit / explain]
+```
+```
+$ swarm describe support-triage          # tiered: one-line summary + drill-down
 support-triage (entity: ticket)
-  CAN:  read inbound email · classify (LLM, no I/O) · draft replies (technical may search KB) ·
-        send email ONLY after approval (idempotent) · write a CRM note (idempotent)
-  CANNOT: send without approval · call undeclared tools · touch anything outside gmail/kb/hubspot
-  NEEDS SECRETS: gmail_oauth, hubspot_api_key, anthropic_api_key
-  REPLAYABLE: yes   DURABLE: yes   EFFECTS VISIBLE IN CONTRACT: yes
+  ▸ CAN: read email · classify (LLM, no tools) · draft (technical may kb.search) ·
+         send email ONLY after approval (idempotent) · write CRM note
+  ▸ CANNOT: send without approval · call undeclared tools · touch anything unbound
+  ▸ NEEDS: gmail_oauth, hubspot_api_key, anthropic_api_key
+  ▸ REPLAYABLE ✓  DURABLE ✓  EFFECTS-VISIBLE-IN-CONTRACT ✓
+  [--data] DATA: reads email subject/body/from + CRM record; writes reply + CRM note
+  [--untrusted] INJECTION SURFACE: email.body → classifier + draft prompts;
+                mitigation → classifier has no tools, send requires human approval
+  [--budget] 3 turns/ticket, low est. cost, emergency-stop on
 ```
-*You approve **what it can do**, provably, before it runs. The generated `support-triage/` is real YAML you can open/diff — you just never had to write it.*
+*You approve **what it can do + what it can touch + who authorizes it**, provably, before it runs. The rich dimensions (data / injection / budget / retention) are **drill-downs**, not a 20-line wall — one-line summary by default.*
 
-**Beat 7 — Run, watch, replay.**
+**Beat 7 — Run it *in mock mode first*, then real bindings.**
 ```
-$ swarm secrets set gmail_oauth --oauth      # inline OAuth, not "go edit a file"
-$ swarm serve --dev
-$ swarm trace <run>          # every step, tool call, agent decision
-$ swarm run replay <run>     # reproduce exactly why it drafted / escalated
+$ swarm serve --dev --mock-connectors          # mock gmail/crm/kb — feel value with NO OAuth
+$ swarm scenario run fixtures/angry_complaint_email.json
+   → classify(needs_human) → escalate → approval  (no email sent) ✓
+$ swarm trace latest ; swarm run replay latest
+# then, when ready:
+$ swarm bind gmail --oauth ; swarm bind hubspot --oauth ; swarm serve
 ```
+*Mock connectors = the tool-side of the shipped scenario runner (#1252/#1655) — a tool that returns fixtures. The user feels the architecture in 60 seconds instead of fighting OAuth for twenty minutes. Ships with fixtures + expected traces.*
 
 ---
 
-## 3. Part 2 — It becomes composable: the flow gets an interface
-
-Publishing derives the **pins** (#1468) — what makes it a building block:
+## 3. Part 2 — It becomes composable: the flow gets an interface (with compat rules)
 ```
 $ swarm publish support-triage --to colony
-interface:
-  inputs:  [ email.received ]                         (from gmail trigger)
-  outputs: [ ticket.resolved@1 {ticket_id, category, resolution, sentiment},
-             complaint.escalated@1 {ticket_id, customer_id, reason} ]
-  requires: backend[anthropic], tools[gmail, kb, hubspot]
-  ontology: support-ontology@1.1
-verify ✓ · platform_version ">=1.8" · pushed support-triage@1.0
+  interface:
+    inputs:  [ communication.email.received@1 ]
+    outputs: [ ticket.resolved@1, complaint.escalated@1 ]      (ontology-typed)
+    requires: backend[anthropic], tools[email, kb, crm]
+    ontology: support-ontology@1.1
+  compatibility: ticket.resolved@1 unchanged · complaint.escalated@1 unchanged
+  verify ✓ · platform_version ">=1.8" · pushed support-triage@1.0.0
 ```
-*Outputs are ontology-typed events, so a different author's flow can consume them without knowing anything about triage internals.*
-
----
-
-## 4. Part 3 — Compose into a larger system: `customer-ops`
-
-**Pull the pieces (one ours, one a stranger's, one a template):**
+Compatibility rules (enforced on publish/upgrade): add-optional-field = compatible; add-required / remove / rename / narrow-enum = **breaking**; widen-enum = maybe. Upgrades show a **capability diff** requiring re-approval:
 ```
-$ swarm new customer-ops
-$ swarm add support-triage@1.0
-$ swarm add churn-watch@2.3
-$ swarm add csat-survey@1.1
+$ swarm upgrade support-triage@1.1
+  + technical-draft may now call kb.search
+  + ticket.resolved adds optional resolution_summary
+  no new external writes
+Approve upgrade? [y / explain]
 ```
 
-**Wire by pin compatibility — the tool proposes only compatible connections:**
+## 4. Part 3 — Compose into `customer-ops` (typed wiring + mappers as first-class infra)
 ```
+$ swarm add support-triage@1.0 churn-watch@2.3 csat-survey@1.1
+$ swarm plan            # preview the composition as a patch before applying
 $ swarm wire
-Unwired outputs → compatible inputs (matched via ontology):
-  support-triage.ticket.resolved     → csat-survey.on_resolved   ✓ exact match
+  support-triage.ticket.resolved     → csat-survey.on_resolved   ✓ exact (shared ontology)
   support-triage.complaint.escalated → churn-watch.signal        ⚠ cross-ontology
-      churn-watch expects: risk.signal (retention-ontology)
-      found mapper: support→retention@0.4 (complaint.escalated → risk.signal)
-      insert it? [y]
-Wire all proposed? [y / pick]
-> verify ✓
+      mapper support→retention@0.4:
+        customer_id → subject.customer_id
+        sentiment   → severity   (angry→high, neutral→medium, happy→low)
+        reason (free text) → risk.reason (enum)   ⚠ LOSSY — needs a classifier mapper
+      mapper tests: ✓ angry complaint→high  ✓ missing customer_id rejected
+      insert? [y]
+> apply → verify ✓
 ```
-*Two connections are exact (shared ontology); one crosses ontologies → the tool finds and inserts a mapper pack and shows the field mapping to confirm. Impedance-matching handled, not a black box.*
+*Mappers are not glue — they're **pure-compute packs + schema assertions + tests**, first-class Colony artifacts, with **lossiness surfaced** (free-text→enum needs a classifier, not a rename).*
 
-**The composed capability surface (whole system, one screen):**
-```
-$ swarm describe customer-ops
-customer-ops  composes: support-triage@1.0, churn-watch@2.3, csat-survey@1.1
-  CAN: read/send support email · classify & draft (LLM) · human-approve sends ·
-       write CRM · survey resolved tickets · flag at-risk customers on complaints
-  NEEDS SECRETS: gmail_oauth, hubspot_api_key, sendgrid_api_key, anthropic_api_key
-  DATA FLOW:
-    email.received → support-triage → ticket.resolved    → csat-survey → survey.sent
-                                    → complaint.escalated → [mapper] → churn-watch → risk.flagged
-  REPLAYABLE across the whole system: yes
-```
-```
-$ swarm serve --dev          # runs the whole composed system, durably
-```
-*Three independently-authored flows — one a stranger's, bridged by a mapper — and you can still see and prove the whole system's effect surface on one screen, and replay the entire composed run.*
+Composed capability surface (`swarm describe customer-ops`) shows the whole system's effect surface and full data flow on one screen, replayable end-to-end — *including a stranger's pack, confined to what you bound.*
 
 ---
 
-## 5. Why this is the ideal path (the through-line)
+## 5. Doctrine: the router is dumb (and helpful about it)
+Make it a named principle. The composer **refuses-and-offers** rather than accepting semantic logic as routing:
+```
+> "route angry emails to a human"
+  'angry' isn't a typed signal yet. I'll add a classifier that emits `sentiment`,
+  then route: sentiment == angry → human.  OK? [y]
+```
+The router's dumbness stays *invisible and helpful* — it auto-inserts the classifier, not a lecture. Agents interpret · routers dispatch · activities perform I/O · compute transforms · **contracts own the effect surface.** That separation is why the flow stays inspectable.
 
-1. **You never wrote YAML — but the YAML exists**, verified and auditable. Ease *and* moat, because the CLI generates the contract instead of hiding it.
-2. **Two type-directed operations do the heavy lifting** — wiring (graph search over pins) and routing (decision tables over typed fields). Both reduce to "pick typed options; tool generates + verifies." Neither is possible in an arbitrary-code tool.
-3. **The architecture that makes it easy is the same one that makes it safe** — judgment→agents, computation→compute, I/O→durable activities, dispatch→dumb router, connection→typed pins. Each is *both* the auditability mechanism *and* the "specifiable via CLI" mechanism.
-4. **The capability surface is the review artifact** at creation *and* composition — the trust moment n8n and LangChain can't offer.
-5. **Composition preserves the guarantees** — a system built from three flows (one a stranger's) is still replayable and its full effect surface is one screen. That is the thing that "really can't be achieved with existing technology."
+## 6. Verify is necessary, not sufficient — generated flows ship with tests/evals
+`verify` proves *structure* (schemas, exhaustive routes, declared capabilities, effect classes, pin compatibility). It cannot prove *behavior* (the classifier is accurate, the mapper preserves meaning, the escalation policy matches company practice). So generated flows include **eval/test scaffolds**:
+```
+$ swarm agent eval triage-classifier   → category 91% · sentiment 96% · fails: case_017
+$ swarm route test ticket.classified   → ✓ angry+billing→escalate  ✓ unknown→general
+$ swarm scenario test                  → ✓ angry complaint escalates, does NOT send email
+```
+*The contract gives the skeleton; tests/evals prove the meat isn't cursed.*
 
-## 6. What it rests on (the roadmap implication)
+## 7. Round-trip editing (no hand-YAML ≠ no visible diff)
+Serious users trust the machine *because* they see the diff. The model:
+- **contract = source of truth**; the CLI mutates it through a stable model and writes **minimal diffs**.
+- **stable IDs** (`route_ticket_classified_by_sentiment`, not `route_1`) so re-running the composer doesn't churn the repo.
+- every command supports `--preview` / `swarm plan` / `swarm diff` / `swarm apply`.
+- hand-edits are respected (contract is authoritative); the composer re-reads and patches.
 
-Everything above is downstream of three investments — over-invest here:
-1. **Typed interfaces / pins (#1468)** — makes wiring type-directed and routing enumerable. The single highest-leverage unlock.
-2. **switch/lookup/threshold helpers (#1668)** — the declarative forms the CLI generates routing into.
-3. **Ontology packs** — shared event vocabularies, so independent authors' flows connect (the interop stdlib).
+## 8. `explain` everywhere — the product is *confidence*, not just workflows
+`swarm explain route ticket.classified`, `swarm explain capability send` — show *why* each row/branch/effect is what it is (which policy, which condition, which approval gate). Creating workflows is table stakes; creating *confidence in what got generated* is the product.
 
-Plus the prerequisites the wedge needs to be *felt*: **`serve --dev` just works** (the #1578 onboarding thread), **credentials are inline/OAuth** (#1645/secrets), and **the ~20 flagship packs exist in Colony** so the picker/agent has real things to pick.
+---
 
-**Sequencing:** make composition *type-checkable* first (pins + ontology + `verify` catching bad wiring/routing), *then* the assembly agent is a thin, improving layer on top — it just drives the same checkable operations a human would, with `verify` as its net. Build the agent before the type layer is solid and you get a confident-but-wrong composer.
+## 9. What it rests on + staged roadmap
+Over-invest in the three leverage points: **(1) typed pins (#1468)** · **(2) switch/lookup/threshold helpers (#1668)** · **(3) ontology packs**. Then:
 
-## 7. Honest hard parts / open questions
+- **Stage 1 — one flow magical in mock mode.** Guided `create` (not full NL) + support-triage template + mock connectors + generated contract + ordered route table + tiered capability surface + trace/replay. *Assembles shipped pieces* (scenario runner #1655, context model, grouped CLI #1657) + the mock-connector piece + a few packs. **Goal: prove the UX loop.**
+- **Stage 2 — typed pins + ontology-backed wiring** (exact pin matching, incompatibility diagnostics, mapper-insertion preview). **Goal: prove composition.**
+- **Stage 3 — binding + capability review** (inline OAuth, secret/policy binding, capability screen, upgrade capability diff). **Goal: prove trust.**
+- **Stage 4 — Colony flagship packs** (Gmail/Outlook, Slack, HubSpot/Salesforce, approval, KB, SendGrid, Stripe, GitHub, generic webhook/HTTP, support/commerce/customer ontologies). **Goal: give the assembly agent real ingredients.**
+- **Stage 5 — assembly agent, last.** A *power assistant over the existing typed operations* (search → propose shape/wiring/routes/mappers/bindings → verify → explain → patch), never "LLM writes files from vibes." When it's wrong, the platform still **fails closed** instead of confidently generating grammatical nonsense.
 
-1. **The assembly agent (NL → correct composition) is genuinely unsolved** — pack selection, mapper insertion, ambiguity resolution. Ship the *guided* scaffold first (deterministic, achievable); treat NL `create` as the improving layer, with `verify` guaranteeing even a wrong guess produces a valid-or-rejected flow, never a broken one.
-2. **Mappers are the real gap** — cross-ontology wiring needs them. Escape: a marketplace mapper library for common pairs, or the agent *generates* a mapper (a small pure-compute transform) and `verify`s it + shows the field mapping to confirm.
-3. **Semantic ≠ structural** — two events with the same schema can mean different things. Ontologies mitigate; the *capability-surface review* is where a human confirms intent that types can't guarantee. (So the review moment is not optional.)
-4. **Logic is not wiring** — auto-wiring does the plumbing; branch *conditions* are the routing/decision-table problem (#1668) or an agent-proposed condition. Keep them separate; both get reviewed.
-5. **Ambiguity always needs a chooser** — you can't automate away *choice*, only reduce it from "design the graph" to "pick one of two."
-6. **Credential friction can kill the wedge** — if `create` ends with "go set up secrets," it's lost. The create flow must prompt/OAuth inline so it ends *running*.
-7. **Pack-library chicken-and-egg** — "triage my email" fails with no gmail pack. Seed Colony's flagship packs before the `create` demo is worth showing.
+## 10. Honest hard parts / open questions
+1. **Assembly agent is unsolved** — ship guided composer first; NL is the improving layer, with `verify` guaranteeing valid-or-rejected, never broken.
+2. **Mappers are core infra** — enum translation, normalization, lossiness, defaults, unit/identity resolution, version compat. First-class packs with tests, not magic glue.
+3. **Semantic ≠ structural** — ontologies mitigate; the capability-surface review is where a human confirms intent types can't guarantee (so review is not optional).
+4. **Ambiguity needs a chooser** — reduce "design the graph" to "pick one of two"; can't automate away choice.
+5. **Prompt injection** — support email is adversarial; the containment story (no-tool classifier, approval-gated send, durable activities, bound capabilities) is the mitigation, and it must be *surfaced* in the capability review.
+6. **Credential friction can kill the wedge** — mock mode first; `create` ends *running*, not "go set up secrets."
+7. **Pack-library chicken-and-egg** — seed Colony's flagship packs before the `create` demo is worth showing.
+8. **The real trap:** "no hand-YAML" must not become "no one understands what got generated." The diff, the capability surface, `explain`, and the tests are what keep the easy UX from becoming complexity hidden in worse lighting.
